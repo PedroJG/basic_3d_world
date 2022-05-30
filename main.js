@@ -3,12 +3,52 @@
 import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.module.js';
 import {OrbitControls} from 'https://cdn.jsdelivr.net/npm/three@0.118/examples/jsm/controls/OrbitControls.js';
 
+
+class RigidBody {
+    constructor() {
+    }
+
+    CreateBox(mass, pos, quat, size) {
+        this._transform = new Ammo.btTransform();
+        this._transform.setIdentity();
+        this._transform.setOrigin(new Ammo.btVector3(pos.x, pos.y, pos.z));
+        this._transform.setRotation(new Ammo.btQuaternion(quat.x, quat.y, quat.z, quat.w));
+        this._motionState = new Ammo.btDefaultMotionState(this._transform);
+
+        const btSize = new Ammo.btVector3(size.x * 0.5, size.y * 0.5, size.z * 0.5);
+        this._shape = new Ammo.btBoxShape(btSize);
+        this._shape.setMargin(0.05);
+
+        this._inertia = new Ammo.btVector3(0, 0, 0);
+        if (mass > 0) {
+            this._shape.calculateLocalInertia(mass, this._inertia);
+        }
+
+        this._info = new Ammo.btRigidBodyConstructionInfo(
+            mass, this._motionState, this._shape, this._inertia
+        );
+        this._body = new Ammo.btRigidBody(this._info);
+
+        Ammo.destroy(btSize);
+    }
+}
+
 class BasicWorldDemo {
     constructor() {
-        this._Initialize();
     }
 
     _Initialize() {
+        // Ammo.JS config
+        this._collisionConfiguration = new Ammo.btDefaultCollisionConfiguration();
+        this._dispatcher = new Ammo.btCollisionDispatcher(this._collisionConfiguration);
+        this._broadphase = new Ammo.btDbvtBroadphase();
+        this._solver = new Ammo.btSequentialImpulseConstraintSolver();
+        this._physicsWorld = new Ammo.btDiscreteDynamicsWorld(
+            this._dispatcher, this._broadphase, this._solver, this._collisionConfiguration
+        );
+
+        this._physicsWorld.setGravity(new Ammo.btVector3(0, -100, 0));
+
         // ThreeJS init with the canvas from HTML
         this._canvas = document.querySelector('canvas.webgl');
         this._threejs = new THREE.WebGLRenderer({
@@ -23,12 +63,11 @@ class BasicWorldDemo {
 
         window.addEventListener('resize', () => {
             this._OnWindowResize();
-            console.log("window resized");
         }, false);
 
         // Camera setup
         const fov = 60;
-        const aspect = 1920 / 1080;
+        const aspect = window.innerWidth / window.innerHeight;
         const near = 1.0;
         const far = 1000.0;
         this._camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
@@ -74,31 +113,46 @@ class BasicWorldDemo {
 
         this._scene.background = texture;
 
-        // Plane
-        const plane = new THREE.Mesh(
-            new THREE.PlaneGeometry(100, 100, 10, 10),
+        // Ground Plane
+        const ground = new THREE.Mesh(
+            new THREE.BoxGeometry(100, 1, 100),
             new THREE.MeshStandardMaterial({
                 color: 0xFFFFFF,
             })
         );
 
-        plane.castShadow = false;
-        plane.receiveShadow = true;
-        plane.rotation.x = -Math.PI / 2;
-        this._scene.add(plane);
+        ground.castShadow = false;
+        ground.receiveShadow = true;
+        // ground.rotation.x = -Math.PI / 2;
+        this._scene.add(ground);
 
+        const rbGround = new RigidBody();
+        rbGround.CreateBox(0, ground.position, ground.quaternion, new THREE.Vector3(100, 1, 100));
+        this._physicsWorld.addRigidBody(rbGround._body);
+
+        // Box
         const box = new THREE.Mesh(
-            new THREE.BoxGeometry(2, 2, 2),
+            new THREE.BoxGeometry(4, 4, 4),
             new THREE.MeshStandardMaterial({
-                color: 0x808080,
+                color: 0xfb8500,
             })
         );
-        box.position.set(0, 2, 0);
+        box.position.set(0, 60, 0);
         box.castShadow = true;
         box.receiveShadow = true;
         this._scene.add(box);
 
+        const rbBox = new RigidBody();
+        rbBox.CreateBox(1, box.position, box.quaternion, new THREE.Vector3(4, 4, 4));
+        this._physicsWorld.addRigidBody(rbBox._body);
 
+        this._rigidBodies = [{mesh: box, rigidBody: rbBox}]
+
+        this._tmpTransform = new Ammo.btTransform();
+
+        this._countdown = 1.0;
+        this._count = 0;
+        this._previousRAF = null;
 
         this._RAF();
     }
@@ -110,15 +164,42 @@ class BasicWorldDemo {
     }
 
     _RAF() {
-        requestAnimationFrame(() => {
+        requestAnimationFrame((t) => {
+            if (this._previousRAF === null) {
+                this._previousRAF = t;
+            }
+
+            this._Step(t - this._previousRAF);
             this._threejs.render(this._scene, this._camera);
             this._RAF();
+            this._previousRAF = t;
         });
+    }
+
+    _Step(timeElapsed) {
+        const timeElapsedS = timeElapsed * 0.001;
+
+        this._physicsWorld.stepSimulation(timeElapsedS, 10);
+
+        for (let i = 0; i < this._rigidBodies.length; i++) {
+            this._rigidBodies[i].rigidBody._motionState.getWorldTransform(this._tmpTransform);
+            const pos = this._tmpTransform.getOrigin();
+            const quat = this._tmpTransform.getRotation();
+            const pos3 = new THREE.Vector3(pos.x(), pos.y(), pos.z());
+            const quat3 = new THREE.Quaternion(quat.x(), quat.y(), quat.z(), quat.w());
+
+            this._rigidBodies[i].mesh.position.copy(pos3);
+            this._rigidBodies[i].mesh.quaternion.copy(quat3);
+        }
     }
 }
 
 let _APP = null;
 
 window.addEventListener('DOMContentLoaded', () => {
-    _APP = new BasicWorldDemo();
+    Ammo().then((lib) => {
+        Ammo = lib;
+        _APP = new BasicWorldDemo();
+        _APP._Initialize();
+    })
 })
